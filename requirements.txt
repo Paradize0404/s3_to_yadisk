@@ -1,0 +1,9 @@
+aiogram>=3.1.1,<4.0
+aiohttp>=3.9.3
+python-dotenv
+aiogram-calendar
+boto3
+asyncpg
+requests
+gspread
+oauth2client
