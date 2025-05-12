@@ -6,7 +6,19 @@ from botocore.client import Config
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor
 import time
+from datetime import datetime
 
+# ------------------------------------------------------------------------------
+# ⬇️  Настройки «обратной» синхронизации
+# TRUE  →  если файла НЕТ на Я‑диске, мы удаляем его копию из S3
+# FALSE →  ничего не удаляем
+DELETE_MISSING = True
+# ------------------------------------------------------------------------------
+
+def delete_from_s3(key: str):
+    """Удалить объект из S3 и вывести лог."""
+    s3.delete_object(Bucket=bucket_name, Key=key)
+    print(f"🗑️  Удалено из S3: {key}")
 
 # 🔐 Доступ к S3
 s3 = boto3.client(
@@ -27,18 +39,13 @@ YANDEX_LOGIN = os.getenv('YANDEX_LOGIN')
 YANDEX_APP_PASSWORD = os.getenv('YANDEX_APP_PASSWORD')
 DISK_FOLDER = 'Накладные'
 
-from urllib.parse import quote
 
-def is_already_uploaded(key):
+def is_already_uploaded(key: str) -> bool:
     parts = key.split('/')
     if len(parts) < 3:
         return False
-    subfolder = parts[1]
-    filename = parts[2]
-
-    
-
-    return filename in existing_cache[subfolder]
+    subfolder, filename = parts[1], parts[2]
+    return filename in existing_cache.get(subfolder, set())
 
 
 
@@ -57,8 +64,7 @@ def ensure_folder_exists(folder_name):
 def list_files_in_disk_folder(folder):
     url = f"https://webdav.yandex.ru/{quote(DISK_FOLDER + '/' + folder)}"
     r = requests.request(
-        "PROPFIND",
-        url,
+        "PROPFIND", url,
         auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD),
         headers={"Depth": "1"}
     )
@@ -77,6 +83,12 @@ existing_cache = {}
 
 def upload_to_disk(local_path, key):
     parts = key.split('/')
+    subfolder = parts[1] if len(parts) >= 3 else ''
+    filename  = parts[2] if len(parts) >= 3 else parts[-1]
+
+    ensure_folder_exists(subfolder)
+
+
     if len(parts) >= 3:
         subfolder = parts[1]
         filename = parts[2]
@@ -98,16 +110,17 @@ def upload_to_disk(local_path, key):
 
     print(f"⬆️ Загружено: {subfolder}/{filename} → статус: {r.status_code}")
 
-    existing_cache[subfolder].add(filename)
+    existing_cache.setdefault(subfolder, set()).add(filename)
+
 
 def sync():
-
     print("📂 Загрузка списка всех файлов с диска...")
     existing_cache.clear()
     disk_folders = set()
+
     response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
 
-    # Собираем все уникальные папки
+    # 1. Собираем подпапки invoices/YYYY-MM-DD
     for obj in response.get('Contents', []):
         key = obj['Key']
         if key.endswith('/'):
@@ -116,43 +129,40 @@ def sync():
         if len(parts) >= 3:
             disk_folders.add(parts[1])
 
-    # Загружаем список файлов по каждой папке один раз
+    # 2. Считываем содержимое каждой подпапки с диска
     for folder in disk_folders:
         existing_cache[folder] = list_files_in_disk_folder(folder)
 
-
-
-    files = []
-
+    # 3. Качаем и заливаем то, чего нет на диске
     for obj in response.get('Contents', []):
         key = obj['Key']
         if key.endswith('/'):
             continue
-        filename = key.split('/')[-1]
-        local_path = os.path.join(local_tmp, filename)
-        # Проверяем: есть ли уже на Диске
-        # скачиваем, только если ещё нет
         if not is_already_uploaded(key):
+            filename   = key.split('/')[-1]
+            local_path = os.path.join(local_tmp, filename)
             s3.download_file(bucket_name, key, local_path)
             print(f'📥 Скачано: {key}')
             upload_to_disk(local_path, key)
         else:
             print(f'⏭️ Пропущено (уже есть): {key}')
 
-        
-
-    def process_file(file):
-        local_path, key = file
-        upload_to_disk(local_path, key)
-
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        executor.map(process_file, files)
+    # 4. Удаляем из S3 объекты, отсутствующие на диске
+    if DELETE_MISSING:
+        for obj in response.get('Contents', []):
+            key = obj['Key']
+            if key.endswith('/'):
+                continue
+            parts = key.split('/')
+            if len(parts) < 3:
+                continue
+            subfolder, filename = parts[1], parts[2]
+            if filename not in existing_cache.get(subfolder, set()):
+                delete_from_s3(key)
 
 print("🧪 KEY:", os.getenv('AWS_ACCESS_KEY_ID'))
 print("🧪 SECRET:", os.getenv('AWS_SECRET_ACCESS_KEY')[:5], '...')
 
-
-from datetime import datetime
 
 if __name__ == '__main__':
     while True:
