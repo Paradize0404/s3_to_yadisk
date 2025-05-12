@@ -88,6 +88,8 @@ def upload_to_disk(local_path, key):
 
     print(f"⬆️ Загружено: {subfolder}/{filename} → статус: {r.status_code}")
 
+    existing_cache[subfolder].add(filename)
+
 def sync():
 
     print("📂 Загрузка списка всех файлов с диска...")
