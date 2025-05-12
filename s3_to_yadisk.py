@@ -121,10 +121,23 @@ def sync():
 
 print("🧪 KEY:", os.getenv('AWS_ACCESS_KEY_ID'))
 print("🧪 SECRET:", os.getenv('AWS_SECRET_ACCESS_KEY')[:5], '...')
+
+
+from datetime import datetime
+
 if __name__ == '__main__':
-    try:
-        print("🚀 Запуск синхронизации...")
-        sync()
-        print("✅ Синхронизация завершена.")
-    except Exception as e:
-        print("❌ ОШИБКА:", e)
+    while True:
+        now = datetime.now()
+        hour = now.hour
+
+        if 8 <= hour < 17:
+            try:
+                print(f"🚀 [{now.strftime('%H:%M:%S')}] Запуск синхронизации...")
+                sync()
+                print(f"✅ [{now.strftime('%H:%M:%S')}] Синхронизация завершена.")
+            except Exception as e:
+                print(f"❌ [{now.strftime('%H:%M:%S')}] ОШИБКА:", e)
+        else:
+            print(f"⏸️ Сейчас {hour}:00 — вне рабочего интервала (8–17)")
+
+        time.sleep(300)  # 5 минут
