@@ -108,10 +108,10 @@ def sync():
         existing_cache[folder] = list_files_in_disk_folder(folder)
 
 
-    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+
     files = []
 
-    for obj in response.get('Contents', []):
+    for obj in filtered_contents:
         key = obj['Key']
         if key.endswith('/'):
             continue
