@@ -34,9 +34,7 @@ def is_already_uploaded(key):
     subfolder = parts[1]
     filename = parts[2]
 
-    # Загрузка кэша при первом обращении
-    if subfolder not in existing_cache:
-        existing_cache[subfolder] = list_files_in_disk_folder(subfolder)
+    
 
     return filename in existing_cache[subfolder]
 
@@ -77,9 +75,7 @@ def upload_to_disk(local_path, key):
 
     ensure_folder_exists(subfolder)
 
-    # ⚡ Если кеша для папки нет — загрузим 1 раз
-    if subfolder not in existing_cache:
-        existing_cache[subfolder] = list_files_in_disk_folder(subfolder)
+
 
     if filename in existing_cache[subfolder]:
         print(f"⏩ Пропущено (уже есть): {subfolder}/{filename}")
@@ -92,6 +88,26 @@ def upload_to_disk(local_path, key):
     print(f"⬆️ Загружено: {subfolder}/{filename} → статус: {r.status_code}")
 
 def sync():
+
+    print("📂 Загрузка списка всех файлов с диска...")
+    existing_cache.clear()
+    disk_folders = set()
+    response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
+
+    # Собираем все уникальные папки
+    for obj in response.get('Contents', []):
+        key = obj['Key']
+        if key.endswith('/'):
+            continue
+        parts = key.split('/')
+        if len(parts) >= 3:
+            disk_folders.add(parts[1])
+
+    # Загружаем список файлов по каждой папке один раз
+    for folder in disk_folders:
+        existing_cache[folder] = list_files_in_disk_folder(folder)
+
+
     response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
     files = []
 
