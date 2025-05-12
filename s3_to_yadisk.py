@@ -1,6 +1,7 @@
 import boto3
 import requests
 import os
+import re
 from botocore.client import Config
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor
@@ -55,13 +56,22 @@ def ensure_folder_exists(folder_name):
 
 def list_files_in_disk_folder(folder):
     url = f"https://webdav.yandex.ru/{quote(DISK_FOLDER + '/' + folder)}"
-    r = requests.request("PROPFIND", url, auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD), headers={"Depth": "1"})
+    r = requests.request(
+        "PROPFIND",
+        url,
+        auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD),
+        headers={"Depth": "1"}
+    )
     if r.status_code != 207:
         print(f"⚠️ Не удалось получить список файлов из {folder}: {r.status_code}")
         return set()
-    
-    # Извлекаем имена файлов из ответа
-    return set(line.split('/')[-1] for line in r.text.split('<d:href>') if folder in line and '.' in line)
+
+    names = set()
+    # находим все <d:href>…</d:href> и берём чистое имя файла
+    for href in re.findall(r"<d:href>(.*?)</d:href>", r.text, flags=re.IGNORECASE):
+        if f"/{folder}/" in href and '.' in href:
+            names.add(href.split('/')[-1])        # уже без тега
+    return names
 
 existing_cache = {}
 
