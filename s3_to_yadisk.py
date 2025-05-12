@@ -8,12 +8,43 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 from datetime import datetime
 
+import psycopg2, psycopg2.extras
+
+pg_conn = psycopg2.connect(
+    host     = os.getenv("PGHOST"),
+    port     = os.getenv("PGPORT", 5432),
+    user     = os.getenv("PGUSER"),
+    password = os.getenv("PGPASSWORD"),
+    dbname   = os.getenv("PGDATABASE")
+)
+pg_conn.autocommit = True
+cur = pg_conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
 # ------------------------------------------------------------------------------
 # ⬇️  Настройки «обратной» синхронизации
 # TRUE  →  если файла НЕТ на Я‑диске, мы удаляем его копию из S3
 # FALSE →  ничего не удаляем
 DELETE_MISSING = True
 # ------------------------------------------------------------------------------
+
+def db_file_exists(key: str) -> bool:
+    cur.execute("SELECT 1 FROM ydisk_files WHERE key=%s AND in_disk", (key,))
+    return cur.fetchone() is not None
+
+def db_mark_present(key: str, subfolder: str, filename: str):
+    cur.execute(
+        """INSERT INTO ydisk_files(key,subfolder,filename,in_disk)
+           VALUES (%s,%s,%s,true)
+           ON CONFLICT (key) DO UPDATE
+             SET in_disk = true, updated_at = now()""",
+        (key, subfolder, filename)
+    )
+
+def db_mark_deleted(key: str):
+    cur.execute("UPDATE ydisk_files SET in_disk=false, updated_at=now() WHERE key=%s", (key,))
+
+
+
 
 def delete_from_s3(key: str):
     """Удалить объект из S3 и вывести лог."""
@@ -61,23 +92,6 @@ def ensure_folder_exists(folder_name):
 #    r = requests.head(url, auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD))
 #    return r.status_code == 200
 
-def list_files_in_disk_folder(folder):
-    url = f"https://webdav.yandex.ru/{quote(DISK_FOLDER + '/' + folder)}"
-    r = requests.request(
-        "PROPFIND", url,
-        auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD),
-        headers={"Depth": "1"}
-    )
-    if r.status_code != 207:
-        print(f"⚠️ Не удалось получить список файлов из {folder}: {r.status_code}")
-        return set()
-
-    names = set()
-    # находим все <d:href>…</d:href> и берём чистое имя файла
-    for href in re.findall(r"<d:href>(.*?)</d:href>", r.text, flags=re.IGNORECASE):
-        if f"/{folder}/" in href and '.' in href:
-            names.add(href.split('/')[-1])        # уже без тега
-    return names
 
 existing_cache = {}
 
@@ -89,18 +103,10 @@ def upload_to_disk(local_path, key):
     ensure_folder_exists(subfolder)
 
 
-    if len(parts) >= 3:
-        subfolder = parts[1]
-        filename = parts[2]
-    else:
-        subfolder = ''
-        filename = parts[-1]
-
-    ensure_folder_exists(subfolder)
 
 
 
-    if filename in existing_cache[subfolder]:
+    if filename in existing_cache.get(subfolder, set()):
         print(f"⏩ Пропущено (уже есть): {subfolder}/{filename}")
         return
 
@@ -108,33 +114,25 @@ def upload_to_disk(local_path, key):
     with open(local_path, 'rb') as f:
         r = requests.put(upload_url, auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD), data=f)
 
+
+
     print(f"⬆️ Загружено: {subfolder}/{filename} → статус: {r.status_code}")
 
-    existing_cache.setdefault(subfolder, set()).add(filename)
+    db_mark_present(key, subfolder, filename)
 
 
 def sync():
-    print("📂 Загрузка списка всех файлов с диска...")
-    existing_cache.clear()
-    disk_folders = set()
+    print(f"[{datetime.now():%H:%M:%S}] 📂 Загрузка списка всех файлов с диска...")
 
     response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
 
-    # 1. Собираем подпапки invoices/YYYY-MM-DD
-    for obj in response.get('Contents', []):
-        key = obj['Key']
-        if key.endswith('/'):
-            continue
-        parts = key.split('/')
-        if len(parts) >= 3:
-            disk_folders.add(parts[1])
-
-    # 2. Считываем содержимое каждой подпапки с диска
-    for folder in disk_folders:
-        existing_cache[folder] = list_files_in_disk_folder(folder)
+    existing_cache.clear()
+    cur.execute("SELECT subfolder, filename FROM ydisk_files WHERE in_disk")
+    for subfolder, filename in cur.fetchall():
+        existing_cache.setdefault(subfolder, set()).add(filename)
 
     # 3. Качаем и заливаем то, чего нет на диске
-    for obj in response.get('Contents', []):
+    for obj in response.get('Contents') or []:
         key = obj['Key']
         if key.endswith('/'):
             continue
@@ -159,6 +157,7 @@ def sync():
             subfolder, filename = parts[1], parts[2]
             if filename not in existing_cache.get(subfolder, set()):
                 delete_from_s3(key)
+                db_mark_deleted(key)
 
 print("🧪 KEY:", os.getenv('AWS_ACCESS_KEY_ID'))
 print("🧪 SECRET:", os.getenv('AWS_SECRET_ACCESS_KEY')[:5], '...')
