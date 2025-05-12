@@ -7,3 +7,4 @@ asyncpg
 requests
 gspread
 oauth2client
+psycopg2-binary
