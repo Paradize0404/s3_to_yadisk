@@ -4,6 +4,7 @@ import os
 from botocore.client import Config
 from urllib.parse import quote
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 
 # 🔐 Доступ к S3
@@ -111,7 +112,7 @@ def sync():
 
     files = []
 
-    for obj in filtered_contents:
+    for obj in response.get('Contents', []):
         key = obj['Key']
         if key.endswith('/'):
             continue
