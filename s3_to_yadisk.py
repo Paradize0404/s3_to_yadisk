@@ -87,10 +87,15 @@ def ensure_folder_exists(folder_name):
     if r.status_code not in (201, 405):  # 201 = создано, 405 = уже существует
         print(f"⚠️ Не удалось создать папку {folder_name}: {r.status_code} {r.text}")
 
-#def file_exists_on_disk(subfolder, filename):
-#    url = f"https://webdav.yandex.ru/{quote(DISK_FOLDER + '/' + subfolder + '/' + filename)}"
-#    r = requests.head(url, auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD))
-#    return r.status_code == 200
+def disk_file_exists(subfolder: str, filename: str) -> bool:
+    """
+    Быстрый HEAD-запрос к WebDAV. Возвращает True, если файл
+    реально лежит на Я.Диске (а не просто «записан в БД»).
+    """
+    url = f"https://webdav.yandex.ru/{quote(DISK_FOLDER + '/' + subfolder + '/' + filename)}"
+    r = requests.head(url, auth=(YANDEX_LOGIN, YANDEX_APP_PASSWORD))
+    return r.status_code == 200        # 200 – OK, всё в порядке
+
 
 
 existing_cache = {}
@@ -117,8 +122,9 @@ def upload_to_disk(local_path, key):
 
 
     print(f"⬆️ Загружено: {subfolder}/{filename} → статус: {r.status_code}")
-
     db_mark_present(key, subfolder, filename)
+    existing_cache.setdefault(subfolder, set()).add(filename)   # 🆕 фиксируем в кэше
+
 
 
 def sync():
@@ -156,8 +162,10 @@ def sync():
                 continue
             subfolder, filename = parts[1], parts[2]
             if filename not in existing_cache.get(subfolder, set()):
-                delete_from_s3(key)
-                db_mark_deleted(key)
+                # убеждаемся, что файла точно нет на Диске
+                if not disk_file_exists(subfolder, filename):
+                    delete_from_s3(key)
+                    db_mark_deleted(key)
 
 print("🧪 KEY:", os.getenv('AWS_ACCESS_KEY_ID'))
 print("🧪 SECRET:", os.getenv('AWS_SECRET_ACCESS_KEY')[:5], '...')
